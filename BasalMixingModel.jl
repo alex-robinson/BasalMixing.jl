@@ -1,21 +1,4 @@
-## Preamble #############################################
-cd(@__DIR__)
-import Pkg; Pkg.activate(".")
-#########################################################
-
-using Revise
-
-using Turing
-using ForwardDiff
-using Distributions
-using Statistics
-using Random
-using DataFrames
-using CSV
-using JLD2
 using CairoMakie
-
-Random.seed!(42)
 
 mutable struct BasalMixingModel
     n::Int
@@ -194,15 +177,6 @@ function RunBasalMixingModel(;t0=0.0,t1=1000.0,dt=1.0,mixing_rate_clean=0.03,mix
     return b, b1, b2
 end
 
-
-t = 0.0:3000.0
-
-c = concentration.(1.0, t)
-
-b, b1, b2 = RunBasalMixingModel(;t1=3000.0,dt=0.5)
-
-
-
 function plot_BasalMixingModelRun(b,b1,b2)
 
     fig = Figure(size=(600,600))
@@ -232,5 +206,3 @@ function plot_BasalMixingModelRun(b,b1,b2)
 
     return fig
 end
-
-fig = plot_BasalMixingModelRun(b,b1,b2)
