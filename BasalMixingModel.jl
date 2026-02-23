@@ -13,7 +13,7 @@ mutable struct BasalMixingModel
 end
 
 function BasalMixingModel(;
-    depth::Union{Vector{Float64},UnitRange{Int64}} = collect(3040.0:3053.0),
+    depth::Union{Vector{Float64},UnitRange{Int64}} = collect(3035.0:3053.0),
     age_k81 = zeros(length(depth)),
     c_k81 = ones(length(depth)),
     c_ar40 = ones(length(depth)),
@@ -167,12 +167,15 @@ function RunBasalMixingModel(;t0=0.0,t1=1000.0,dt=1.0,mixing_rate_clean=0.03,mix
     times = collect(500.0:100.0:3000.0)
     depths = [3045.0, 3047.0, 3050.0]
 
+    # Determine clean ice indices
+    jj_clean = findall(b.depth .<= 3040)
+    
     # Define summary objects
     b1 = BasalMixingModelSummary1(times,b.depth)
     b2 = BasalMixingModelSummary2(depths,collect(time))
 
     mixing_rate = fill(mixing_rate_bottom,b.n-1)
-    mixing_rate[1] = mixing_rate_clean
+    mixing_rate[jj_clean] .= mixing_rate_clean
 
     # Set initial values
     b.c_k81 .= 1.0
@@ -199,7 +202,7 @@ function RunBasalMixingModel(;t0=0.0,t1=1000.0,dt=1.0,mixing_rate_clean=0.03,mix
 
         # Restore clean ice age beyond t_old time
         if t > t_old
-            b.c_k81[1] = c_k81_clean
+            b.c_k81[jj_clean] .= c_k81_clean
         end
 
         # Get ages too
@@ -236,9 +239,9 @@ function plot_BasalMixingModelRun(b,b1,b2;k81=nothing,ar40=nothing)
     col_data = "#BC401E"
 
     if !isnothing(ar40)
-        fig = Figure(size=(900,600))
+        fig = Figure(size=(1000,600))
     else
-        fig = Figure(size=(600,600))
+        fig = Figure(size=(700,600))
     end
 
     ## PANEL 1: Depth versus closed-system age
@@ -278,9 +281,15 @@ function plot_BasalMixingModelRun(b,b1,b2;k81=nothing,ar40=nothing)
     ax2.yticks = 0:100:900
 
     col = ["green","purple","teal"]
+    cols_transparent = [(c, 0.2) for c in col]
+
     for (i,d) in enumerate(b2.depths)
         lines!(ax2,b2.time,b2.age_k81[i,:],color=col[i],linewidth=2)
     end
+
+    # Plot closed-system age from data
+    hlines!(ax2,k81.age;color=col,linewidth=2,linestyle=:dash)
+    hspan!(ax2, k81.age .- k81.age_lo, k81.age .+ k81.age_hi; color=cols_transparent)
 
     return fig
 end
