@@ -4,6 +4,7 @@ import Pkg; Pkg.activate(".")
 #########################################################
 
 using Revise
+using Dates
 using CairoMakie
 using CSV
 using DataFrames
@@ -22,8 +23,24 @@ k81_data[!,:depth] = 0.5 .* (k81_data[!,"depth_top"] .+ k81_data[!,"depth_bottom
 # Run the basal mixing model
 # Return current state, summary1 and summary2
 
-b, b1, b2 = RunBasalMixingModel(;t1=3000.0,dt=2.0)
+# Default depths
+depth = 3035:1.0:3053
+setup = "default"
+
+# High resolution depths
+depth = 3035:0.1:3053
+setup = "high"
+
+# Variable resolution depths
+depths_clean = collect(3035:3040)
+depths_dirty = range(3040.0,3053.0; step=0.2) #length=14)
+depth = unique([depths_clean...,depths_dirty...])
+setup = "high"
+
+b, b1, b2 = RunBasalMixingModel(;depth=depth,t1=3000.0,dt=0.1)
 
 # Plot the results
 
 fig = plot_BasalMixingModelRun(b,b1,b2;k81=k81_data) #,ar40=ar40_data)
+
+mysave(plt_prefix()*"mixingmodel_$setup.png",fig)

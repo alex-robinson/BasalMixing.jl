@@ -2,6 +2,16 @@ using CairoMakie
 using DifferentialEquations
 using LinearAlgebra
 
+function plt_prefix(;path="plots")
+    return joinpath(path,string(Dates.today())*"_")
+end
+
+function mysave(fout,fig;px_per_unit=2)
+    println("Saving ",fout)
+    save(fout,fig,px_per_unit=px_per_unit)
+    return fout
+end
+
 """
     cell_thickness(depth, depth_bedrock)
 
@@ -40,6 +50,8 @@ end
 
 mutable struct BasalMixingModel
     n::Int
+    depth_dirty_ice::Float64
+    depth_bedrock::Float64
     layer::Vector{Int}
     depth::Vector{Float64}
     thickness::Vector{Float64}
@@ -53,8 +65,8 @@ end
 
 function BasalMixingModel(;
     depth::Union{Vector{Float64},UnitRange{Int64}} = collect(3035.0:3053.0),
-    depth_bedrock = 3053.44,
     depth_dirty_ice = 3040.00,
+    depth_bedrock = 3053.44,
     thickness = cell_thickness(depth,depth_bedrock),
     f_mixing_rate = mixing_rate_basic,
     m_clean = 0.03,
@@ -74,6 +86,8 @@ function BasalMixingModel(;
 
     return BasalMixingModel(
         n,
+        depth_dirty_ice,
+        depth_bedrock,
         collect(layers),
         collect(depth),
         collect(thickness),
@@ -230,9 +244,11 @@ function linterp(x, y, xi)
     return y[i] + t * (y[i+1] - y[i])
 end
 
-function RunBasalMixingModel(;t0=0.0,t1=1000.0,dt=1.0,t_old=250.0)
+function RunBasalMixingModel(;depth = 3035:1.0:3053, t0=0.0,t1=1000.0,dt=1.0,t_old=250.0)
 
-    b = BasalMixingModel(depth=collect(3035.0:1.0:3053.0))
+    b = BasalMixingModel(depth=collect(depth))
+
+    #b = BasalMixingModel(depth=collect(3035.0:1.0:3053.0))
     #b = BasalMixingModel(depth=collect(3035.0:0.1:3053.0))
 
     # Get times to model
@@ -253,9 +269,6 @@ function RunBasalMixingModel(;t0=0.0,t1=1000.0,dt=1.0,t_old=250.0)
     b.c_k81 .= 1.0
     #b.c_ar40 = 
 
-    c_k81_prev = fill(0.0,b.n)
-    c_k81_prev_1 = fill(0.0,b.n)
-
     dRdt_mixing = fill(0.0,b.n)
     dRdt_decay  = fill(0.0,b.n)
 
@@ -263,9 +276,6 @@ function RunBasalMixingModel(;t0=0.0,t1=1000.0,dt=1.0,t_old=250.0)
 
     # Loop over time and advance model
     for (k, t) in enumerate(time)
-
-        # Save initial concentration
-        c_k81_prev  .= copy.(b.c_k81)
 
         # Get decay tendency
         decay_tendency!(dRdt_decay, b.c_k81, dt; λ = k81_decay_constant)
@@ -310,22 +320,56 @@ function RunBasalMixingModel(;t0=0.0,t1=1000.0,dt=1.0,t_old=250.0)
     return b, b1, b2
 end
 
+function add_clean_dirty_boundary!(ax,x, y; with_label=true)
+
+    hlines!(ax,y; color=:grey40,linewidth=1,linestyle=:solid)
+
+    if with_label
+        text!(ax, "clean ice",
+            position = (x, y),
+            align = (:right, :bottom),
+            fontsize = 8, color = :grey40 )   # x=1.0 means right edge of the axis
+
+        text!(ax, "dirty ice",
+            position = (x, y),
+            align = (:right, :top),
+            fontsize = 8, color = :grey40 )
+    end
+
+    return
+end
 function plot_BasalMixingModelRun(b,b1,b2;k81=nothing,ar40=nothing)
 
-    col_data = "#BC401E"
-
+    col_k81 = ["#487E3D","#8080F7","teal"]
+    col_k81_transparent = [(c, 0.2) for c in col_k81]
+    col_ar40 = "#BC401E"
+    
     if !isnothing(ar40)
         fig = Figure(size=(1000,600))
     else
         fig = Figure(size=(700,600))
     end
 
+    ## PANEL 0: mixing rate versus depth
+    ax0 = Axis(fig[1,1], limits=((-0.10,0.30),(-3053,-3035)), xlabel="Mixing rate (m/yr)", ylabel="Depth (m)", ygridvisible = false )
+    colsize!(fig.layout, 1, Auto(0.6))
+    d = collect(-3052:2:-3036)
+    ax0.yticks = (d,string.(abs.(d)))
+
+    add_clean_dirty_boundary!(ax0, 0.28, -b.depth_dirty_ice)
+    hlines!(ax0,-b.depth;color=(:orange,0.5),linewidth=1.5,linestyle=:dash)
+    
+    lines!(ax0,b.mixing_rate,-b.depth;color=:black,linewidth=2)
+
     ## PANEL 1: Depth versus closed-system age
-    ax1 = Axis(fig[1,1], limits=((200,800),(-3053,-3035)), xlabel="⁸¹K closed system age (kyr)", ylabel="Depth (m)" )
+    ax1 = Axis(fig[1,end+1], limits=((200,800),(-3053,-3035)), xlabel="⁸¹K closed system age (kyr)", ylabel="Depth (m)", ygridvisible = false )
     d = collect(-3052:2:-3036)
     ax1.yticks = (d,string.(abs.(d)))
     ax1.xticks = [200,400,600,800]
 
+    add_clean_dirty_boundary!(ax1, 0.28, -b.depth_dirty_ice,with_label=false)
+    hlines!(ax1,-b.depth;color=(:orange,0.5),linewidth=1.5,linestyle=:dash)
+    
     # Plot time slices from model
     for (k, t) in enumerate(b1.times)
         lines!(ax1,b1.age_k81[k,:],-b1.depth,color=:grey50,linewidth=0.5)
@@ -335,8 +379,8 @@ function plot_BasalMixingModelRun(b,b1,b2;k81=nothing,ar40=nothing)
     end
 
     # Plot data too
-    errorbars!(ax1, k81.age, -k81.depth, k81.age_hi, k81.age_lo, color=col_data, direction=:x, whiskerwidth=8)
-    scatter!(ax1, k81.age, -k81.depth, color=col_data, marker=:circle, markersize=12)
+    errorbars!(ax1, k81.age, -k81.depth, k81.age_hi, k81.age_lo, color=col_k81, direction=:x, whiskerwidth=8)
+    scatter!(ax1, k81.age, -k81.depth, color=col_k81, marker=:circle, markersize=12)
     
     ## PANEL 2 (optional): depth vs d40Ar_ATM concentration
     if !isnothing(ar40)
@@ -346,8 +390,8 @@ function plot_BasalMixingModelRun(b,b1,b2;k81=nothing,ar40=nothing)
         ax3.xticks = 0.0:0.2:0.6
 
         # Plot data too
-        errorbars!(ax3, ar40[!,"δ40/38atm"],-ar40[!,"depth"], ar40[!,"δ40/38atm_err"], ar40[!,"δ40/38atm_err"], color=col_data, direction=:x, whiskerwidth=8)
-        scatter!(ax3, ar40[!,"δ40/38atm"],-ar40[!,"depth"], color=col_data, marker=:circle, markersize=12)
+        errorbars!(ax3, ar40[!,"δ40/38atm"],-ar40[!,"depth"], ar40[!,"δ40/38atm_err"], ar40[!,"δ40/38atm_err"], color=col_ar40, direction=:x, whiskerwidth=8)
+        scatter!(ax3, ar40[!,"δ40/38atm"],-ar40[!,"depth"], color=col_ar40, marker=:circle, markersize=12)
     
     end
 
@@ -356,16 +400,13 @@ function plot_BasalMixingModelRun(b,b1,b2;k81=nothing,ar40=nothing)
     ax2.xticks = [0,1000,2000,3000]
     ax2.yticks = 0:100:900
 
-    col = ["green","purple","teal"]
-    cols_transparent = [(c, 0.2) for c in col]
-
     for (i,d) in enumerate(b2.depths)
-        lines!(ax2,b2.time,b2.age_k81[i,:],color=col[i],linewidth=2)
+        lines!(ax2,b2.time,b2.age_k81[i,:],color=col_k81[i],linewidth=2)
     end
 
     # Plot closed-system age from data
-    hlines!(ax2,k81.age;color=col,linewidth=2,linestyle=:dash)
-    hspan!(ax2, k81.age .- k81.age_lo, k81.age .+ k81.age_hi; color=cols_transparent)
+    hlines!(ax2,k81.age;color=col_k81,linewidth=2,linestyle=:dash)
+    hspan!(ax2, k81.age .- k81.age_lo, k81.age .+ k81.age_hi; color=col_k81_transparent)
 
     return fig
 end
