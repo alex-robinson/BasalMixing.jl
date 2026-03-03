@@ -12,6 +12,20 @@ function mysave(fout,fig;px_per_unit=2)
     return fout
 end
 
+function load_basalmixing_data()
+
+    # Get data to compare with
+    ar40 = CSV.read("data/Bender2010_ar40_data.txt",DataFrame;delim="|",ignorerepeated=true)
+    rename!(ar40, strip.(names(ar40)))
+
+    k81 = CSV.read("data/k81_data.txt",DataFrame;delim=" ",ignorerepeated=true)
+    rename!(k81, strip.(names(k81)))
+    k81[!,:depth] = 0.5 .* (k81[!,"depth_top"] .+ k81[!,"depth_bottom"])
+
+    #return Dict(:k81=>k81, :ar40=>ar40)
+    return (k81, ar40)
+end
+
 # Default depths
 function generate_depths(setup="default";depth=nothing,step=0.2)
     if setup == "default"
@@ -395,7 +409,7 @@ function linterp(x, y, xi)
     return y[i] + t * (y[i+1] - y[i])
 end
 
-function RunBasalMixingModel(p ;depth = 3035:1.0:3053, t0=0.0,t1=1000.0,dt=1.0,t_old=250.0)
+function RunBasalMixingModel(p ;depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t_old=250.0, store_b1=true)
 
     # Extract model parameters
     (L_ref, depth_scale, m_clean, m_dirty) = p
@@ -411,15 +425,17 @@ function RunBasalMixingModel(p ;depth = 3035:1.0:3053, t0=0.0,t1=1000.0,dt=1.0,t
 
     # Get times and depths of interest
     times = collect(500.0:100.0:3000.0)
+    times_set = Set(times)
     depths = [3044.8, 3047.4, 3049.84]
 
     # Determine clean ice indices
-    jj_clean = findall(b.depth .<= 3040)
+    jj_clean = findall(b.depth .<= b.depth_lim)
 
     # Define summary objects
-    b1 = BasalMixingModelSummary1(times,b.depth)
+    b1 = store_b1 ? BasalMixingModelSummary1(times, b.depth) : nothing
     b2 = BasalMixingModelSummary2(depths,collect(time))
 
+    
     # Set initial values
     b.c_k81 .= 1.0  # [c/m]
     #b.c_ar40 = 
@@ -428,51 +444,94 @@ function RunBasalMixingModel(p ;depth = 3035:1.0:3053, t0=0.0,t1=1000.0,dt=1.0,t
     dRdt_decay  = fill(0.0,b.n)
 
     k81_decay_constant = decay_constant(229.0)
+    
+    interp_idx = [findlast(b.depth .<= d) for d in b2.depths]
 
-    # Loop over time and advance model
-    for (k, t) in enumerate(time)
+    try
+        # Loop over time and advance model
+        for (k, t) in enumerate(time)
 
-        # Get decay tendency
-        decay_tendency!(dRdt_decay, b.c_k81, dt; λ = k81_decay_constant)
+            # Get decay tendency
+            @inline decay_tendency!(dRdt_decay, b.c_k81, dt; λ = k81_decay_constant)
 
-        # Get mixing tendency
-        mixing_tendency!(dRdt_mixing, b.c_k81, b.mixing_rate, b.thickness; Lref=L_ref)
-        dRdt_mixing[jj_clean] .= 0.0
+            # Get mixing tendency
+            mixing_tendency!(dRdt_mixing, b.c_k81, b.mixing_rate, b.thickness; Lref=L_ref)
+            dRdt_mixing[jj_clean] .= 0.0
 
-        # Avoid mixing and aging in clean ice beyond t_old time
-        if t > t_old
-            dRdt_decay[jj_clean]  .= 0.0
+            # Avoid mixing and aging in clean ice beyond t_old time
+            if t > t_old
+                dRdt_decay[jj_clean]  .= 0.0
+            end
+
+            # Update concentration and ages
+            @. b.c_k81 = b.c_k81 + dRdt_decay * dt + dRdt_mixing * dt
+
+            # Get ages too
+            @. b.age_k81 = concentration_to_age(b.c_k81,1.0)
+
+            # Update to current time
+            b.time = t
+
+            ## Update summary objects
+
+            if store_b1 && !isnothing(b1) 
+                if t in times_set
+                    # Store time slice of current variables
+                    i = findfirst(==(t), times)
+                    b1.age_k81[i,:] = b.age_k81
+                    b1.c_k81[i,:] = b.c_k81
+                end
+            end
+
+            # For each depth d of interest, store the value of the variables
+            # at the current time
+            for (i, d) in enumerate(b2.depths)
+                # b2.age_k81[i,k] = linterp(b.depth, b.age_k81, d)
+                # b2.c_k81[i,k] = linterp(b.depth, b.c_k81, d)
+                j = interp_idx[i]
+                d_frac = (d - b.depth[j]) / (b.depth[j+1] - b.depth[j])
+                b2.age_k81[i,k] = b.age_k81[j] + d_frac * (b.age_k81[j+1] - b.age_k81[j])
+                b2.c_k81[i,k]   = b.c_k81[j]   + d_frac * (b.c_k81[j+1]   - b.c_k81[j])
+            end
+
         end
-
-        # Update concentration
-        b.c_k81 .= b.c_k81 .+ dRdt_decay .* dt .+ dRdt_mixing .* dt
-
-        # Get ages too
-        b.age_k81 .= concentration_to_age.(b.c_k81,1.0)
-
-        # Update to current time
-        b.time = t
-
-        ## Update summary objects
-
-        # Store time slice of current variables
-        if t in b1.times
-            i = findall(t .== b1.times)[1]
-            b1.age_k81[i,:] = b.age_k81
-            b1.c_k81[i,:] = b.c_k81
-        end
-
-        # For each depth d of interest, store the value of the variables
-        # at the current time
-        for (i, d) in enumerate(b2.depths)
-            b2.age_k81[i,k] = linterp(b.depth, b.age_k81, d)
-            b2.c_k81[i,k] = linterp(b.depth, b.c_k81, d)
-        end
-
+    
+    catch e
+        e isa DomainError || rethrow(e)  # only swallow DomainErrors, let everything else propagate
+        return b, b1, b2, false          # false = integration failed
     end
 
-    return b, b1, b2
+    return b, b1, b2, true              # true = integration succeeded
 end
+
+function RunBasalMixingModel(p, dat; depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t_old=250.0, store_b1=true)
+    
+    # Extract dataframes for comparison
+    (k81, ar40) = dat
+
+    b, b1, b2, success = RunBasalMixingModel(p ;depth=depth,t0=t0,t1=t1,dt=dt,t_old=t_old, store_b1=store_b1)
+
+    if success
+        n = length(b2.time)
+        mses_k81 = fill(1e8,n)
+
+        for k in 1:n
+            mses_k81[k] = sum( (b2.age_k81[:,k] .- k81.age).^2 )
+        end
+
+        (mse_k81, kmin) = findmin(mses_k81)
+        rmse_k81 = sqrt(mse_k81)
+        time_k81 = b2.time[kmin]
+    else
+        time_k81 = 0.0
+        rmse_k81 = 1e8
+    end
+
+    return b, b1, b2, (time_k81, rmse_k81), success
+end
+
+
+### PLOTTING ###
 
 function add_clean_dirty_boundary!(ax,x, y; with_label=true)
 
@@ -565,17 +624,4 @@ function plot_BasalMixingModelRun(b,b1,b2;k81=nothing,ar40=nothing)
     hspan!(ax2, k81.age .- k81.age_lo, k81.age .+ k81.age_hi; color=col_k81_transparent)
 
     return fig
-end
-
-function load_basalmixing_data()
-
-    # Get data to compare with
-    ar40_data = CSV.read("data/Bender2010_ar40_data.txt",DataFrame;delim="|",ignorerepeated=true)
-    rename!(ar40_data, strip.(names(ar40_data)))
-
-    k81_data = CSV.read("data/k81_data.txt",DataFrame;delim=" ",ignorerepeated=true)
-    rename!(k81_data, strip.(names(k81_data)))
-    k81_data[!,:depth] = 0.5 .* (k81_data[!,"depth_top"] .+ k81_data[!,"depth_bottom"])
-
-    return Dict(:k81=>k81_data, :ar40=>ar40_data)
 end
