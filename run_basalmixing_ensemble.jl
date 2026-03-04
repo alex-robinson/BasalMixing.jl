@@ -29,9 +29,10 @@ end
 priors = (
     delta       = Uniform(0.1, 2.0),    # 1 m
     m_clean     = truncated(Normal(0.03, 0.02), lower=0.0), # 0.03 m/kyr
-    m_dirty     = truncated(Normal(0.18, 0.10), lower=0.0), # 0.18 m/kyr  
+    m_dirty     = truncated(Normal(0.18, 0.10), lower=0.0), # 0.18 m/kyr
+    t_old       = Uniform(150.0,350.0), # 250 kyr
     #σ           = Exponential(30.0),    # 30 kyr
-    t_old = 250.0,
+    #t_old = 250.0,
     σ = 30.0
 )
 # priors = (
@@ -48,11 +49,13 @@ priors = (
 
     ## Set priors ##
 
-    delta ~ priors.delta
-    m_clean ~ priors.m_clean
-    m_dirty ~ priors.m_dirty
-    t_old = priors.t_old
-    σ     = priors.σ
+    ## Set priors ##
+
+    delta   = priors.delta   isa Distribution ? delta   ~ priors.delta   : priors.delta
+    m_clean = priors.m_clean isa Distribution ? m_clean ~ priors.m_clean : priors.m_clean
+    m_dirty = priors.m_dirty isa Distribution ? m_dirty ~ priors.m_dirty : priors.m_dirty
+    t_old   = priors.t_old   isa Distribution ? t_old   ~ priors.t_old   : priors.t_old
+    σ       = priors.σ       isa Distribution ? σ       ~ priors.σ       : priors.σ
 
     ## Extract obs ##
     (k81, ar40) = dat
@@ -94,7 +97,7 @@ b = BasalMixingModel(depth=depth)
 model = basal_mixing(k81.age, b, (k81, ar40), 0.2, priors)
 
 # Start with MH to verify it works, then switch to SMC for better exploration
-chain = sample(model, MH(), MCMCThreads(), 1000, 4)  # 4 chains in parallel
+chain = sample(model, MH(), MCMCThreads(), 10_000, 4)  # 4 chains in parallel
 
 # Or SMC (no chain length needed — uses particle count)
 #chain = @timed sample(model, SMC(1000), 1000)

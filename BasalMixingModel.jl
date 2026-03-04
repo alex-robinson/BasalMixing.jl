@@ -326,7 +326,7 @@ function RunBasalMixingModel!(p, b, dat; t0=0.0,t1=3000.0,dt=1.0,sampling=false)
     
     if !sampling
         rmse, time, ages = b.rmse_k81, b.time_k81, round.(b.b2.age_k81[:,b.b2.kmin])
-        println("k81 (time, rmse, ages): $rmse, $time, $ages")
+        println("k81 (rmse, time, ages): $rmse, $time, $ages")
     end
 
     return true                 # true = integration succeeded
