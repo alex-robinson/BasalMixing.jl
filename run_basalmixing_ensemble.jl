@@ -75,8 +75,8 @@ chain = sample(model, MH(), MCMCThreads(), 15_000, 4)  # 4 chains in parallel
 
 begin
     df = DataFrame(chain)
-    params = [:L_ref, :depth_scale, :m_clean, :m_dirty, :t_best]
-    labels = ["L_ref", "depth_scale", "m_clean", "m_dirty", "t_best"]
+    #params = [:L_ref, :depth_scale, :m_clean, :m_dirty, :t_best]
+    #labels = ["L_ref", "depth_scale", "m_clean", "m_dirty", "t_best"]
     params = [:depth_scale, :m_clean, :m_dirty, :t_best]
     labels = ["depth_scale", "m_clean", "m_dirty", "t_best"]
     best_idx = argmax(df.logjoint)
@@ -89,7 +89,7 @@ begin
         row, col = divrem(i-1, 2)
         ax = Axis(fig[row+1, col+1], xlabel=label, ylabel="log p")
         ylims!(ax,(-50,0))
-        if param in names(df)
+        if string(param) in names(df)
             scatter!(ax, df[!, param], df.logjoint, alpha=0.6, markersize=6, color=:steelblue)
             # Highlight best point in red
             scatter!(ax, [df[best_idx, param]], [df.logjoint[best_idx]], 
