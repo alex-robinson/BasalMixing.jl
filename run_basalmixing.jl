@@ -24,16 +24,17 @@ begin
         L_ref = 1.0,
         delta = 1.0,
         m_clean = 0.03,
-        m_dirty = 0.18
+        m_dirty = 0.18,
+        t_old = 250.0,
     )
 
-    b, b1, b2, rmse_k81 = RunBasalMixingModel(p, (k81, ar40); depth=depth, dt=0.1)
+    b = BasalMixingModel(depth=depth)
 
-    (time, rmse) = rmse_k81
-    println("k81 (time, rmse): $time, $rmse")
+    RunBasalMixingModel!(p, b, (k81, ar40); dt=0.1, sampling=false)
+    #@btime RunBasalMixingModel!(p, b, (k81, ar40); dt=0.1, sampling=true)
 
     # Plot the results
-    fig = plot_BasalMixingModelRun(b,b1,b2;k81=k81) #,ar40=ar40_data)
+    fig = plot_BasalMixingModelRun(b; k81=k81) #,ar40=ar40_data)
 
 end
 

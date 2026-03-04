@@ -53,18 +53,6 @@ function generate_depths(setup="default";depth=nothing,step=0.2)
     return depth, setup
 end
 
-"""
-    cell_thickness(depth, depth_bedrock)
-
-Compute the thickness of each grid cell from cell-center depths.
-
-# Arguments
-- `depth::AbstractVector{<:Real}`: Cell-center depths (positive downward), possibly unevenly spaced.
-- `depth_bedrock::Real`: Hard lower boundary of the bottom cell.
-
-# Returns
-- `Vector{Float64}`: Thickness of each cell, same length as `depth`.
-"""
 function cell_thickness(depth::AbstractVector{Float64}, depth_bedrock::Float64)
 
     # Midpoints between adjacent centers form the interior interfaces
@@ -79,12 +67,271 @@ function cell_thickness(depth::AbstractVector{Float64}, depth_bedrock::Float64)
     return diff(all_interfaces)
 end
 
-function mixing_rate_discrete(depth, depth_lim, m_clean, m_dirty, delta)
-    println("-- mixing_rate_discrete: $depth_lim, $m_clean, $m_dirty, $delta")
+struct BasalMixingModelSummary1
+    times::Vector{Float64}      # times of snapshots
+    times_set::Set{Float64}     # Set of times for faster indexing
+    depth::Vector{Float64}      # depth axis
+    age_k81::Array{Float64}     # [nt,nd]
+    c_k81::Array{Float64}       # [nt,nd]
+    c_ar40::Array{Float64}      # [nt,nd]
+end
+
+function BasalMixingModelSummary1(times::Vector{Float64},depth::Vector{Float64})
+    nt = length(times)
+    nd = length(depth)
+
+    age_k81 = fill(0.0, nt, nd)
+    c_k81 = fill(0.0, nt, nd)
+    c_ar40 = fill(0.0, nt, nd)
+
+    return BasalMixingModelSummary1(
+        times, Set(times), depth, age_k81, c_k81, c_ar40
+    )
+end
+
+struct BasalMixingModelSummary2
+    depths::Vector{Float64}     # depths of interest
+    time::Vector{Float64}       # time axis
+    time_set::Set{Float64}      # time axis set
+    age_k81::Array{Float64}     # [nd,nt]
+    c_k81::Array{Float64}       # [nd,nt]
+    c_ar40::Array{Float64}      # [nd,nt]
+    sse_k81::Vector{Float64}    # [nt]
+    interp_idx::Vector{Int}     # [nd]
+end
+
+function BasalMixingModelSummary2(depths::Vector{Float64},time::Vector{Float64},depth::Vector{Float64})
+    nd = length(depths)
+    nt = length(time)
+    
+    age_k81 = fill(0.0, nd, nt)
+    c_k81 = fill(0.0, nd, nt)
+    c_ar40 = fill(0.0, nd, nt)
+    sse_k81 = fill(0.0,nt)
+
+    # Get depth interpolation indices to able to fill b2 with the right depth values
+    interp_idx = [findlast(depth .<= d) for d in depths]
+
+    return BasalMixingModelSummary2(
+        depths, time, Set(time), age_k81, c_k81, c_ar40, sse_k81, interp_idx
+    )
+end
+
+mutable struct BasalMixingModel
+    n::Int
+    depth_lim::Float64
+    depth_bedrock::Float64
+    jj_clean::Vector{Int}
+    layer::Vector{Int}
+    depth::Vector{Float64}
+    thickness::Vector{Float64}
+    mixing_rate::Vector{Float64}
+    age_k81::Vector{Float64}
+    c_k81::Vector{Float64}
+    c_ar40::Vector{Float64}
+
+    time::Float64
+
+    dRdt_mixing::Vector{Float64}
+    dRdt_decay::Vector{Float64}
+
+    b1::BasalMixingModelSummary1
+    b2::BasalMixingModelSummary2
+
+    rmse_k81::Float64
+    time_k81::Float64
+end
+
+function BasalMixingModel(;
+    depth::Union{Vector{Float64},UnitRange{Int64}} = collect(3035.0:3053.0),
+    depth_lim = 3040.00,
+    depth_bedrock = 3053.44,
+    thickness = cell_thickness(depth,depth_bedrock),
+    f_mixing_rate = nothing,
+    m_clean = 0.03,
+    m_dirty = m_clean*6,
+    age_k81 = zeros(length(depth)),
+    c_k81 = ones(length(depth)),
+    c_ar40 = ones(length(depth)),
+    time = 0.0
+    )
 
     n = length(depth)
-    m = fill(0.0, n)
+    layers = 1:n
 
+    # Determine clean ice indices
+    jj_clean = findall(depth .<= depth_lim)
+
+    if isnothing(f_mixing_rate)
+        mixing_rate = fill(0.0,n)
+    else
+        mixing_rate = f_mixing_rate(depth)
+    end
+
+    dRdt_mixing = zeros(length(depth))
+    dRdt_decay  = zeros(length(depth))
+
+    # Define summary objects
+    b1 = BasalMixingModelSummary1(collect(500.0:100.0:3000.0), depth)
+    b2 = BasalMixingModelSummary2([3044.8, 3047.4, 3049.84],collect(0.0:1.0:3000.0), depth)
+
+    return BasalMixingModel(
+        n,
+        depth_lim,
+        depth_bedrock,
+        jj_clean,
+        collect(layers),
+        collect(depth),
+        collect(thickness),
+        collect(mixing_rate),
+        age_k81,
+        c_k81,
+        c_ar40,
+        time,
+        dRdt_mixing,
+        dRdt_decay,
+        b1,
+        b2,
+        1e8,
+        1e8
+    )
+end
+
+function ResetBasalMixingModel!(b)
+
+    b.age_k81 .= 0.0
+    b.c_k81 .= 0.0
+    b.c_ar40 .= 0.0
+    b.dRdt_mixing .= 0.0
+    b.dRdt_decay .= 0.0
+    
+    b.b1.age_k81 .= 0.0
+    b.b1.c_k81 .= 0.0
+    b.b1.c_ar40 .= 0.0
+    
+    b.b2.age_k81 .= 0.0
+    b.b2.c_k81 .= 0.0
+    b.b2.c_ar40 .= 0.0
+    b.b2.sse_k81 .= 0.0
+
+    return
+end
+
+function RunBasalMixingModel!(p, b, dat; t0=0.0,t1=3000.0,dt=1.0,sampling=false)
+
+    # Extract model parameters
+    (L_ref, delta, m_clean, m_dirty, t_old) = p
+
+    # Extract data for comparison
+    (k81, ar40) = dat
+    n_obs_k81 = length(k81.age)
+    
+    # Set the mixing rate
+    mixing_rate_smooth!(b.mixing_rate, b.depth, b.depth_lim, m_clean, m_dirty, delta)
+
+    # Get times to model
+    time = t0:dt:t1
+
+    ## Set initial values ##
+
+    ResetBasalMixingModel!(b)
+
+    b.c_k81 .= 1.0  # [c/m]
+    #b.c_ar40 = 
+
+    b.rmse_k81 = 1e8     # Initialize to a high value in case time loop exits prematurely
+    b.time_k81 = 0.0 
+
+    k81_decay_constant = decay_constant(229.0)
+
+    try
+        # Loop over time and advance model
+        for (k, t) in enumerate(time)
+
+            # Get decay tendency
+            @inline decay_tendency!(b.dRdt_decay, b.c_k81, dt; λ = k81_decay_constant)
+
+            # Get mixing tendency
+            @inline mixing_tendency!(b.dRdt_mixing, b.c_k81, b.mixing_rate, b.thickness; Lref=L_ref)
+            for j in b.jj_clean; b.dRdt_mixing[j] = 0.0; end
+
+            # Avoid aging in clean ice beyond t_old time too
+            if t > t_old
+                for j in b.jj_clean; b.dRdt_decay[j] = 0.0; end
+            end
+
+            # Update concentration and ages
+            @. b.c_k81 = b.c_k81 + b.dRdt_decay * dt + b.dRdt_mixing * dt
+
+            # Get ages too
+            @. b.age_k81 = concentration_to_age(b.c_k81,1.0)
+
+            # Update to current time
+            b.time = t
+
+            ## Update summary objects
+
+            if !sampling
+                if t in b.b1.times_set
+                    # Store time slice of current variables
+                    i = findfirst(==(t), b.b1.times)
+                    b.b1.age_k81[i,:] = b.age_k81
+                    b.b1.c_k81[i,:] = b.c_k81
+                end
+            end
+
+            # For each depth d of interest, store the value of the variables
+            # at the current time
+            if t in b.b2.time_set
+
+                #k1 = findfirst(==(t), b.b2.time)
+                k1 = round(Int, (t - t0) / 1.0) + 1     # b.b2.time has dt=1.0
+
+                for (i, d) in enumerate(b.b2.depths)
+                    # b.b2.age_k81[i,k] = linterp(b.depth, b.age_k81, d)
+                    # b.b2.c_k81[i,k] = linterp(b.depth, b.c_k81, d)
+                    j = b.b2.interp_idx[i]
+                    d_frac = (d - b.depth[j]) / (b.depth[j+1] - b.depth[j])
+                    b.b2.age_k81[i,k1] = b.age_k81[j] + d_frac * (b.age_k81[j+1] - b.age_k81[j])
+                    b.b2.c_k81[i,k1]   = b.c_k81[j]   + d_frac * (b.c_k81[j+1]   - b.c_k81[j])
+                end
+                
+                # Get sum of squared errors over all observations for current time
+                sse = 0.0
+                for i in 1:n_obs_k81
+                    sse += (b.b2.age_k81[i,k1] - k81.age[i])^2
+                end
+                b.b2.sse_k81[k1] = sse
+                
+                # Stop time loop early if sampling and relevant ages are too high already
+                if sampling && minimum(@view b.b2.age_k81[:,k1]) >= 1000
+                    break
+                end
+            end
+
+        end
+    
+    catch e
+        e isa DomainError || rethrow(e)  # only swallow DomainErrors, let everything else propagate
+        return false            # false = integration failed
+    end
+
+    # Calculate metrics
+    kmin = argmin(b.b2.sse_k81)
+    b.rmse_k81 = sqrt(b.b2.sse_k81[kmin]/n_obs_k81)
+    b.time_k81 = b.b2.time[kmin]
+
+    if !sampling
+        time, rmse = b.time_k81, b.rmse_k81
+        println("k81 (time, rmse): $time, $rmse")
+    end
+
+    return true                 # true = integration succeeded
+end
+
+function mixing_rate_discrete!(m, depth, depth_lim, m_clean, m_dirty, delta)
+    n = length(m)
+    m .= 0.0
     for j in 1:n-1
         depth_interface = 0.5 * (depth[j] + depth[j+1])
         if depth_interface < depth_lim
@@ -104,19 +351,9 @@ function mixing_rate_discrete(depth, depth_lim, m_clean, m_dirty, delta)
     return m
 end
 
-function make_mixing_rate_discrete(depth_lim, m_clean, m_dirty, delta)
-    return depth -> mixing_rate_discrete(
-        depth,
-        depth_lim,
-        m_clean,
-        m_dirty,
-        delta
-    )
-end
-
-function mixing_rate_smooth(depth, depth_lim, m_clean, m_dirty, delta; sharpness=50.0)
-    n = length(depth)
-    m = fill(0.0, n)
+function mixing_rate_smooth!(m, depth, depth_lim, m_clean, m_dirty, delta; sharpness=50.0)
+    n = length(m)
+    m .= 0.0
     for j in 1:n-1
         d = 0.5 * (depth[j] + depth[j+1])
         w1 = 0.5 * (1 + tanh(sharpness * (d - depth_lim) / delta))         # 0→1 at depth_lim
@@ -127,24 +364,9 @@ function mixing_rate_smooth(depth, depth_lim, m_clean, m_dirty, delta; sharpness
     return m
 end
 
-function make_mixing_rate_smooth(depth_lim, m_clean, m_dirty, delta)
-    return depth -> mixing_rate_smooth(
-        depth,
-        depth_lim,
-        m_clean,
-        m_dirty,
-        delta
-    )
-end
-
-function mixing_rate_continuous(depth, depth_lim, m_clean, m_dirty, delta)
-    # Get mixing rate defined at lower boundary of each cell
-    
-    println("-- mixing_rate_continuous: $depth_lim, $m_clean, $m_dirty, $delta")
-
-    n = length(depth)
-    m = fill(0.0,n)
-
+function mixing_rate_continuous!(m, depth, depth_lim, m_clean, m_dirty, delta)
+    n = length(m)
+    m .= 0.0
     for j in 1:n-1
 
         # Get depth of lower cell boundary
@@ -167,115 +389,6 @@ function mixing_rate_continuous(depth, depth_lim, m_clean, m_dirty, delta)
     m[end] = 0.0        # No mixing at the bottom of last layer
 
     return m
-end
-
-function make_mixing_rate_continuous(depth_lim, m_clean, m_dirty, delta)
-    return depth -> mixing_rate_continuous(
-        depth,
-        depth_lim,
-        m_clean,
-        m_dirty,
-        delta
-    )
-end
-
-mutable struct BasalMixingModel
-    n::Int
-    depth_lim::Float64
-    depth_bedrock::Float64
-    layer::Vector{Int}
-    depth::Vector{Float64}
-    thickness::Vector{Float64}
-    mixing_rate::Vector{Float64}
-    age_k81::Vector{Float64}
-    c_k81::Vector{Float64}
-    c_ar40::Vector{Float64}
-
-    time::Float64
-end
-
-function BasalMixingModel(;
-    depth::Union{Vector{Float64},UnitRange{Int64}} = collect(3035.0:3053.0),
-    depth_lim = 3040.00,
-    depth_bedrock = 3053.44,
-    thickness = cell_thickness(depth,depth_bedrock),
-    f_mixing_rate = nothing,
-    m_clean = 0.03,
-    m_dirty = m_clean*6,
-    age_k81 = zeros(length(depth)),
-    c_k81 = ones(length(depth)),
-    c_ar40 = ones(length(depth)),
-    time = 0.0
-    )
-
-    n = length(depth)
-    layers = 1:n
-
-    if isnothing(f_mixing_rate)
-        mixing_rate = fill(0.0,n)
-    else
-        mixing_rate = f_mixing_rate(depth)
-    end
-
-    # Define summary objects
-    b1 = sampling ? nothing : BasalMixingModelSummary1(times, b.depth) # Only need BasalMixingModelSummary1 when not sampling
-    b2 = BasalMixingModelSummary2(depths,collect(time))
-    
-    return BasalMixingModel(
-        n,
-        depth_lim,
-        depth_bedrock,
-        collect(layers),
-        collect(depth),
-        collect(thickness),
-        collect(mixing_rate),
-        age_k81,
-        c_k81,
-        c_ar40,
-        time
-    )
-end
-
-struct BasalMixingModelSummary1
-    times::Vector{Float64}      # times of snapshots
-    depth::Vector{Float64}      # depth axis
-    age_k81::Array{Float64}     # [nt,nd]
-    c_k81::Array{Float64}       # [nt,nd]
-    c_ar40::Array{Float64}      # [nt,nd]
-end
-
-function BasalMixingModelSummary1(times::Vector{Float64},depth::Vector{Float64})
-    nt = length(times)
-    nd = length(depth)
-
-    age_k81 = fill(0.0, nt, nd)
-    c_k81 = fill(0.0, nt, nd)
-    c_ar40 = fill(0.0, nt, nd)
-
-    return BasalMixingModelSummary1(
-        times, depth, age_k81, c_k81, c_ar40
-    )
-end
-
-struct BasalMixingModelSummary2
-    depths::Vector{Float64}     # depths of interest
-    time::Vector{Float64}       # time axis
-    age_k81::Array{Float64}     # [nd,nt]
-    c_k81::Array{Float64}       # [nd,nt]
-    c_ar40::Array{Float64}      # [nd,nt]
-end
-
-function BasalMixingModelSummary2(depths::Vector{Float64},time::Vector{Float64})
-    nd = length(depths)
-    nt = length(time)
-    
-    age_k81 = fill(0.0, nd, nt)
-    c_k81 = fill(0.0, nd, nt)
-    c_ar40 = fill(0.0, nd, nt)
-
-    return BasalMixingModelSummary2(
-        depths, time, age_k81, c_k81, c_ar40
-    )
 end
 
 function concentration(R0::Float64, t::Float64; t_half::Float64 = 229.0)
@@ -320,22 +433,9 @@ function mixing_tendency!(dRdt::Vector{Float64}, R::Vector{Float64}, Φ::Vector{
     return
 end
 
-"""
-    step_ar40(cc_ar40, flux, dt)
-
-Step the total ⁴⁰Ar content forward in time.
-
-Arguments:
-- `cc_ar40`: current total ⁴⁰Ar content [cc m⁻²]
-- `flux`: basal ⁴⁰Ar flux [cc m⁻² kyr⁻¹]
-- `dt`: timestep [kyr]
-
-Returns updated ⁴⁰Ar content [cc m⁻²]
-"""
 function step_ar40(cc_ar40::Float64, flux::Float64, dt::Float64)
     return cc_ar40 + flux * dt
 end
-
 
 """
     cc_to_delta_ar40(ar40, ar40_ref)
@@ -378,133 +478,6 @@ function linterp(x, y, xi)
     return y[i] + t * (y[i+1] - y[i])
 end
 
-function RunBasalMixingModel(p ; b = nothing, depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t_old=250.0, sampling=false)
-
-    # Extract model parameters
-    (L_ref, delta, m_clean, m_dirty) = p
-
-    # Initialize mixing model
-    if isnothing(b)
-        b = BasalMixingModel(depth=collect(depth))
-    end
-
-    # Define the mixing rate vector
-    b.mixing_rate = mixing_rate_smooth(collect(depth), b.depth_lim, m_clean, m_dirty, delta)
-
-    # Get times to model
-    time = t0:dt:t1
-
-    # Get times and depths of interest
-    times = collect(500.0:100.0:3000.0)
-    times_set = Set(times)
-    depths = [3044.8, 3047.4, 3049.84]
-
-    # Determine clean ice indices
-    jj_clean = findall(b.depth .<= b.depth_lim)
-
-    # Define summary objects
-    b1 = sampling ? nothing : BasalMixingModelSummary1(times, b.depth) # Only need BasalMixingModelSummary1 when not sampling
-    b2 = BasalMixingModelSummary2(depths,collect(time))
-
-    # Set initial values
-    b.c_k81 .= 1.0  # [c/m]
-    #b.c_ar40 = 
-
-    dRdt_mixing = fill(0.0,b.n)
-    dRdt_decay  = fill(0.0,b.n)
-
-    k81_decay_constant = decay_constant(229.0)
-
-    interp_idx = [findlast(b.depth .<= d) for d in b2.depths]
-
-    try
-        # Loop over time and advance model
-        for (k, t) in enumerate(time)
-
-            # Get decay tendency
-            @inline decay_tendency!(dRdt_decay, b.c_k81, dt; λ = k81_decay_constant)
-
-            # Get mixing tendency
-            mixing_tendency!(dRdt_mixing, b.c_k81, b.mixing_rate, b.thickness; Lref=L_ref)
-            dRdt_mixing[jj_clean] .= 0.0
-
-            # Avoid mixing and aging in clean ice beyond t_old time
-            if t > t_old
-                dRdt_decay[jj_clean]  .= 0.0
-            end
-
-            # Update concentration and ages
-            @. b.c_k81 = b.c_k81 + dRdt_decay * dt + dRdt_mixing * dt
-
-            # Get ages too
-            @. b.age_k81 = concentration_to_age(b.c_k81,1.0)
-
-            # Update to current time
-            b.time = t
-
-            ## Update summary objects
-
-            if !isnothing(b1) 
-                if t in times_set
-                    # Store time slice of current variables
-                    i = findfirst(==(t), times)
-                    b1.age_k81[i,:] = b.age_k81
-                    b1.c_k81[i,:] = b.c_k81
-                end
-            end
-
-            # For each depth d of interest, store the value of the variables
-            # at the current time
-            for (i, d) in enumerate(b2.depths)
-                # b2.age_k81[i,k] = linterp(b.depth, b.age_k81, d)
-                # b2.c_k81[i,k] = linterp(b.depth, b.c_k81, d)
-                j = interp_idx[i]
-                d_frac = (d - b.depth[j]) / (b.depth[j+1] - b.depth[j])
-                b2.age_k81[i,k] = b.age_k81[j] + d_frac * (b.age_k81[j+1] - b.age_k81[j])
-                b2.c_k81[i,k]   = b.c_k81[j]   + d_frac * (b.c_k81[j+1]   - b.c_k81[j])
-            end
-            
-            # Stop time loop early if sampling and relevant ages are too high already
-            if sampling && minimum(b2.age_k81[:,k]) >= 1000
-                break
-            end
-        end
-    
-    catch e
-        e isa DomainError || rethrow(e)  # only swallow DomainErrors, let everything else propagate
-        return b, b1, b2, false          # false = integration failed
-    end
-
-    return b, b1, b2, true              # true = integration succeeded
-end
-
-function RunBasalMixingModel(p, dat; b = nothing, depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t_old=250.0, sampling=false)
-    
-    # Extract dataframes for comparison
-    (k81, ar40) = dat
-
-    b, b1, b2, success = RunBasalMixingModel(p ;b=b,depth=depth,t0=t0,t1=t1,dt=dt,t_old=t_old, sampling=sampling)
-
-    if success
-        n = length(b2.time)
-        mses_k81 = fill(1e8,n)
-
-        for k in 1:n
-            mses_k81[k] = sum( (b2.age_k81[:,k] .- k81.age).^2 )
-        end
-
-        (mse_k81, kmin) = findmin(mses_k81)
-        rmse_k81 = sqrt(mse_k81)
-        time_k81 = b2.time[kmin]
-    else
-        time_k81 = 0.0
-        rmse_k81 = 1e8
-    end
-
-    return b, b1, b2, (time_k81, rmse_k81), success
-end
-
-
 ### PLOTTING ###
 
 function add_clean_dirty_boundary!(ax,x, y; with_label=true)
@@ -525,7 +498,10 @@ function add_clean_dirty_boundary!(ax,x, y; with_label=true)
 
     return
 end
-function plot_BasalMixingModelRun(b,b1,b2;k81=nothing,ar40=nothing)
+function plot_BasalMixingModelRun(b;k81=nothing,ar40=nothing)
+
+    b1 = b.b1
+    b2 = b.b2
 
     col_k81 = ["#487E3D","#8080F7","teal"]
     col_k81_transparent = [(c, 0.2) for c in col_k81]

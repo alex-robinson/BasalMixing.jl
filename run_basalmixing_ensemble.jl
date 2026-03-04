@@ -122,17 +122,15 @@ begin
         depth_scale = df.delta[best_idx],
         m_clean     = df.m_clean[best_idx],
         m_dirty     = df.m_dirty[best_idx],
+        t_old       = 250.0,
     )
 
-    b_cache = BasalMixingModel(depth=collect(depth))
+    b = BasalMixingModel(depth=depth)
 
-    @btime b, b1, b2, rmse_k81 = RunBasalMixingModel(p, (k81, ar40); b=b_cache, depth=depth, dt=0.1)
-
-    (time, rmse) = rmse_k81
-    println("k81 (time, rmse): $time, $rmse")
+    RunBasalMixingModel!(p, b, (k81, ar40); dt=0.1, sampling=false)
 
     # Plot the results
-    fig = plot_BasalMixingModelRun(b,b1,b2;k81=k81) #,ar40=ar40_data)
+    fig = plot_BasalMixingModelRun(b; k81=k81) #,ar40=ar40_data)
 end
 
 begin
