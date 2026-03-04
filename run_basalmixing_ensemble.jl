@@ -93,7 +93,7 @@ chain = sample(model, MH(), MCMCThreads(), 10_000, 4)  # 4 chains in parallel
 begin
     df = DataFrame(chain)
     params = [:delta, :m_clean, :f_dirty, :t_old, :time_pred]
-    labels = ["delta", "m_clean", "f_dirty", "t_old", "time_pred"]
+    labels = ["delta (m)", "m_clean (m/yr)", "f_dirty", "t_old (kyr)", "time_pred (kyr)"]
     best_idx = argmax(df.logjoint)
 
     describe(chain)
@@ -114,6 +114,8 @@ begin
 
     # Plot the results
     fig = plot_BasalMixingModelRun(b; k81=k81) #,ar40=ar40_data)
+    display(fig)
+    mysave(plt_prefix()*"mixingmodel-ens-best.png",fig)
 end
 
 begin
@@ -134,6 +136,7 @@ begin
     end
 
     display(fig)
+    mysave(plt_prefix()*"mixingmodel-ens-logp.png",fig)
 end
 
 begin
@@ -152,4 +155,5 @@ begin
     end
 
     display(fig)
+    mysave(plt_prefix()*"mixingmodel-ens-hist.png",fig)
 end
