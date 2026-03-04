@@ -409,7 +409,7 @@ function linterp(x, y, xi)
     return y[i] + t * (y[i+1] - y[i])
 end
 
-function RunBasalMixingModel(p ;depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t_old=250.0, store_b1=true)
+function RunBasalMixingModel(p ;depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t_old=250.0, sampling=false)
 
     # Extract model parameters
     (L_ref, depth_scale, m_clean, m_dirty) = p
@@ -432,10 +432,9 @@ function RunBasalMixingModel(p ;depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t
     jj_clean = findall(b.depth .<= b.depth_lim)
 
     # Define summary objects
-    b1 = store_b1 ? BasalMixingModelSummary1(times, b.depth) : nothing
+    b1 = sampling ? nothing : BasalMixingModelSummary1(times, b.depth) # Only need BasalMixingModelSummary1 when not sampling
     b2 = BasalMixingModelSummary2(depths,collect(time))
 
-    
     # Set initial values
     b.c_k81 .= 1.0  # [c/m]
     #b.c_ar40 = 
@@ -444,7 +443,7 @@ function RunBasalMixingModel(p ;depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t
     dRdt_decay  = fill(0.0,b.n)
 
     k81_decay_constant = decay_constant(229.0)
-    
+
     interp_idx = [findlast(b.depth .<= d) for d in b2.depths]
 
     try
@@ -474,7 +473,7 @@ function RunBasalMixingModel(p ;depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t
 
             ## Update summary objects
 
-            if store_b1 && !isnothing(b1) 
+            if !isnothing(b1) 
                 if t in times_set
                     # Store time slice of current variables
                     i = findfirst(==(t), times)
@@ -493,7 +492,11 @@ function RunBasalMixingModel(p ;depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t
                 b2.age_k81[i,k] = b.age_k81[j] + d_frac * (b.age_k81[j+1] - b.age_k81[j])
                 b2.c_k81[i,k]   = b.c_k81[j]   + d_frac * (b.c_k81[j+1]   - b.c_k81[j])
             end
-
+            
+            # Stop time loop early if sampling and relevant ages are too high already
+            if sampling && minimum(b2.age_k81[:,k]) >= 1000
+                break
+            end
         end
     
     catch e
@@ -504,12 +507,12 @@ function RunBasalMixingModel(p ;depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t
     return b, b1, b2, true              # true = integration succeeded
 end
 
-function RunBasalMixingModel(p, dat; depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t_old=250.0, store_b1=true)
+function RunBasalMixingModel(p, dat; depth = 3035:1.0:3053, t0=0.0,t1=3000.0,dt=1.0,t_old=250.0, sampling=false)
     
     # Extract dataframes for comparison
     (k81, ar40) = dat
 
-    b, b1, b2, success = RunBasalMixingModel(p ;depth=depth,t0=t0,t1=t1,dt=dt,t_old=t_old, store_b1=store_b1)
+    b, b1, b2, success = RunBasalMixingModel(p ;depth=depth,t0=t0,t1=t1,dt=dt,t_old=t_old, sampling=sampling)
 
     if success
         n = length(b2.time)
