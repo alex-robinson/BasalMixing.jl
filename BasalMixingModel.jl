@@ -235,7 +235,7 @@ function BasalMixingModel(;
     dRdt_mixing = zeros(n)
     dRdt_decay  = zeros(n)
     idx_clean = findall(depth .<= depth_lim) # Determine clean ice indices
-    
+
     # Get state objects
     state = BasalMixingModelState(n;time=[time])
 
@@ -328,8 +328,7 @@ function RunBasalMixingModel!(p, b, dat; t0=0.0,t1=3000.0,dt=1.0,sampling=false)
             @inline decay_tendency!(b.dRdt_decay, b.state.c_k81, dt; λ = k81_decay_constant)
 
             # Get mixing tendency
-            @inline mixing_tendency!(b.dRdt_mixing, b.state.c_k81, b.mixing_rate, b.thickness; Lref=L_ref)
-            for j in b.idx_clean; b.dRdt_mixing[j] = 0.0; end
+            @inline mixing_tendency!(b.dRdt_mixing, b.state.c_k81, b.mixing_rate, b.thickness; Lref=L_ref, idx_clean=b.idx_clean)
 
             # Avoid aging in clean ice beyond t_old time too
             if t > t_old
@@ -345,9 +344,7 @@ function RunBasalMixingModel!(p, b, dat; t0=0.0,t1=3000.0,dt=1.0,sampling=false)
             ## AR40 ##
             
             # Ar40 mixing tendency, overwrites b.dRdt_mixing with Ar40 values
-            b.dRdt_mixing .= 0.0
-            @inline mixing_tendency!(b.dRdt_mixing, b.state.c_ar40, b.mixing_rate, b.thickness; Lref=L_ref)
-            for j in b.idx_clean; b.dRdt_mixing[j] = 0.0; end   # no mixing in clean ice
+            @inline mixing_tendency!(b.dRdt_mixing, b.state.c_ar40, b.mixing_rate, b.thickness; Lref=L_ref, idx_clean=b.idx_clean)
 
             # Bottom source flux into the deepest box only
             b.dRdt_mixing[end] += F_ar40 / b.thickness[end]
@@ -525,7 +522,7 @@ function decay_tendency!(dRdt::Vector{Float64}, R::Vector{Float64}, dt::Float64;
     return
 end
 
-function mixing_tendency!(dRdt::Vector{Float64}, R::Vector{Float64}, Φ::Vector{Float64}, Δz::Vector{Float64}; Lref::Float64=1.0)
+function mixing_tendency!(dRdt::Vector{Float64}, R::Vector{Float64}, Φ::Vector{Float64}, Δz::Vector{Float64}; Lref::Float64=1.0, idx_clean=1)
     # R: concentration at cell centers [R], length N
     # Φ: mixing rate at lower edge of each cell [m/kyr], length N
     #    - Φ[j] is at the boundary between cell j and cell j+1
@@ -544,6 +541,8 @@ function mixing_tendency!(dRdt::Vector{Float64}, R::Vector{Float64}, Φ::Vector{
         dRdt[j]   += flux / Δz[j]       # [R/kyr]
         dRdt[j+1] -= flux / Δz[j+1]     # [R/kyr]
     end
+
+    dRdt[idx_clean] .= 0.0
 
     return
 end
